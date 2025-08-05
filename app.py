@@ -7,26 +7,32 @@ import time
 from datetime import datetime
 
 app = Flask(__name__)
+CORS(app)  # Remove in production or specify domains
 
-
-CORS(app)# Remove "*" in production environments
-
-# Configuration (update with your API key)
+# Configuration
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "your_api_key_here")
-MODEL_NAME = "gemini-2.5-flash"  # Latest stable version :cite[2]:cite[3]
+MODEL_NAME = "gemini-2.5-flash"
 MAX_RESPONSE_TOKENS = 600
 SYSTEM_PROMPT = "You are a mature friend to people in their teenage and respond to the queries that teenagers have in a friendly, easy to understand and concise way. Often using points and example limiting it to less than 350 tokens strictly. Use Proper formatting in the response so it's very clear to understand."
 
 # Initialize Gemini
-genai.configure(api_key=GEMINI_API_KEY, )
+genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel(
     MODEL_NAME,
-    system_instruction=SYSTEM_PROMPT,  # Correct parameter placement
+    system_instruction=SYSTEM_PROMPT,
     generation_config=genai.GenerationConfig(
         max_output_tokens=MAX_RESPONSE_TOKENS
-    )
+    ),
+    # Adjust safety settings to reduce blocking
+    safety_settings={
+        'HATE': 'BLOCK_NONE',
+        'HARASSMENT': 'BLOCK_NONE',
+        'SEXUAL': 'BLOCK_NONE',
+        'DANGEROUS': 'BLOCK_NONE'
+    }
 )
-# In-memory session storage (replace with Redis in production)
+
+# In-memory session storage
 sessions = {}
 
 class ChatSession:
@@ -35,9 +41,7 @@ class ChatSession:
         self.history = []
         self.created_at = datetime.now()
         self.last_used = datetime.now()
-        self.chat = model.start_chat(
-            history=[]
-        )
+        self.chat = model.start_chat(history=[])
     
     def add_message(self, role, parts):
         self.history.append({"role": role, "content": parts, "timestamp": time.time()})
@@ -57,6 +61,26 @@ def get_session(session_id=None):
     sessions[new_id] = session
     return session
 
+def extract_response_text(response):
+    """Safely extract text from Gemini response with error handling"""
+    try:
+        # First try the standard method
+        return response.text
+    except ValueError:
+        # If standard method fails, try manual extraction
+        if response.candidates:
+            for candidate in response.candidates:
+                if candidate.content and candidate.content.parts:
+                    text_parts = [part.text for part in candidate.content.parts if hasattr(part, 'text')]
+                    if text_parts:
+                        return ''.join(text_parts)
+        
+        # Check for safety blocking
+        if response.prompt_feedback and response.prompt_feedback.block_reason:
+            return "I'm sorry, I couldn't respond to that due to content safety restrictions."
+        
+        return "I'm sorry, I couldn't generate a response for that query."
+
 @app.route('/chat', methods=['POST'])
 def chat_endpoint():
     data = request.json
@@ -67,20 +91,14 @@ def chat_endpoint():
         return jsonify({"error": "Missing 'query' parameter"}), 400
     
     try:
-        # Get or create session
         session = get_session(session_id)
-        
-        # Add user message to history
         session.add_message("user", query)
         
         # Generate response
         response = session.chat.send_message(query)
-        answer = response.text
+        answer = extract_response_text(response)
         
-        # Add model response to history
         session.add_message("model", answer)
-        
-        # Manage session storage (basic cleanup)
         cleanup_old_sessions()
         
         return jsonify({
@@ -97,7 +115,6 @@ def chat_endpoint():
         }), 500
 
 def cleanup_old_sessions(max_age_seconds=3600, max_sessions=50):
-    """Basic session cleanup to prevent memory bloat"""
     now = datetime.now()
     expired_keys = [
         sid for sid, session in sessions.items()
@@ -107,7 +124,6 @@ def cleanup_old_sessions(max_age_seconds=3600, max_sessions=50):
     for key in expired_keys:
         sessions.pop(key, None)
     
-    # Enforce maximum session count
     if len(sessions) > max_sessions:
         oldest = sorted(sessions.items(), key=lambda x: x[1].last_used)[0][0]
         sessions.pop(oldest, None)
@@ -121,10 +137,11 @@ def delete_session(session_id):
 def model_info():
     return jsonify({
         "model": MODEL_NAME,
+        "system_prompt": SYSTEM_PROMPT,
+        "max_response_tokens": MAX_RESPONSE_TOKENS,
         "capabilities": ["text", "multimodal"],
-        "max_input_tokens": 1048576,  # 1 million tokens :cite[2]:cite[3]
-        "max_output_tokens": 65536,
-        "cost_effective": True  # Gemini 2.5 Flash is budget-friendly :cite[5]
+        "max_input_tokens": 1048576,
+        "cost_effective": True
     })
 
 if __name__ == '__main__':
