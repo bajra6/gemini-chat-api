@@ -14,7 +14,7 @@ CORS(app)# Remove "*" in production environments
 # Configuration (update with your API key)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "your_api_key_here")
 MODEL_NAME = "gemini-2.5-flash"  # Latest stable version :cite[2]:cite[3]
-MAX_RESPONSE_TOKENS = 250
+MAX_RESPONSE_TOKENS = 400
 SYSTEM_PROMPT = "You are a mature friend to people in their teenage and respond to the queries that teenagers have in a friendly, easy to understand and concise way. Often using points and example limiting it to less than 150 words. Use Proper formatting in the response so it's very clear to understand."
 
 # Initialize Gemini
