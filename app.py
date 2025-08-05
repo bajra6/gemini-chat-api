@@ -11,8 +11,8 @@ app = Flask(__name__)
 
 CORS(app, origins=[
     *
-    # Remove "*" in production environments
-])
+    
+])# Remove "*" in production environments
 
 # Configuration (update with your API key)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "your_api_key_here")
