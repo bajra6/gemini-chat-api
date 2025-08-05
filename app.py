@@ -14,10 +14,17 @@ CORS(app)# Remove "*" in production environments
 # Configuration (update with your API key)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "your_api_key_here")
 MODEL_NAME = "gemini-2.5-flash"  # Latest stable version :cite[2]:cite[3]
+MAX_RESPONSE_TOKENS = 250
+SYSTEM_PROMPT = "You are a mature friend to people in their teenage and respond to the queries that teenagers have in a friendly, easy to understand and concise way. Often using points and example limiting it to less than 150 words. Use Proper formatting in the response so it's very clear to understand."
 
 # Initialize Gemini
-genai.configure(api_key=GEMINI_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY, )
 model = genai.GenerativeModel(MODEL_NAME)
+
+
+generation_config = genai.GenerationConfig(
+    max_output_tokens=MAX_RESPONSE_TOKENS
+)
 
 # In-memory session storage (replace with Redis in production)
 sessions = {}
@@ -28,7 +35,11 @@ class ChatSession:
         self.history = []
         self.created_at = datetime.now()
         self.last_used = datetime.now()
-        self.chat = model.start_chat(history=[])
+        self.chat = model.start_chat(
+            history=[],
+            system_instruction=SYSTEM_PROMPT,
+            generation_config=generation_config
+        )
     
     def add_message(self, role, parts):
         self.history.append({"role": role, "content": parts, "timestamp": time.time()})
