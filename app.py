@@ -19,13 +19,13 @@ SYSTEM_PROMPT = "You are a mature friend to people in their teenage and respond 
 
 # Initialize Gemini
 genai.configure(api_key=GEMINI_API_KEY, )
-model = genai.GenerativeModel(MODEL_NAME)
-
-
-generation_config = genai.GenerationConfig(
-    max_output_tokens=MAX_RESPONSE_TOKENS
+model = genai.GenerativeModel(
+    MODEL_NAME,
+    system_instruction=SYSTEM_PROMPT,  # Correct parameter placement
+    generation_config=genai.GenerationConfig(
+        max_output_tokens=MAX_RESPONSE_TOKENS
+    )
 )
-
 # In-memory session storage (replace with Redis in production)
 sessions = {}
 
@@ -36,9 +36,7 @@ class ChatSession:
         self.created_at = datetime.now()
         self.last_used = datetime.now()
         self.chat = model.start_chat(
-            history=[],
-            system_instruction=SYSTEM_PROMPT,
-            generation_config=generation_config
+            history=[]
         )
     
     def add_message(self, role, parts):
