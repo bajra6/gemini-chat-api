@@ -1,4 +1,4 @@
 flask
 google
 uuid
-google.generative
+google.generativeai
