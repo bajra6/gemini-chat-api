@@ -12,7 +12,7 @@ CORS(app)  # Remove in production or specify domains
 # Configuration
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "your_api_key_here")
 MODEL_NAME = "gemini-2.5-flash"
-MAX_RESPONSE_TOKENS = 600
+MAX_RESPONSE_TOKENS = 2000
 # Updated system prompt
 SYSTEM_PROMPT = """
 You are a mature, non-judgmental friend/Psychologist for teenagers. Provide helpful, honest advice on any topic while maintaining appropriate boundaries. 
