@@ -22,7 +22,7 @@ app = Flask(__name__)
 CORS(app)  # Configure for specific domains in production
 
 # --- Configuration ---
-os.environ["GOOGLE_API_KEY"] = "AIzaSyDbfJXpFTJUjw4THXI7Um-8l4EO9YpfjPE"
+os.environ["GOOGLE_API_KEY"] = "XXXX"
 if not os.getenv("GOOGLE_API_KEY"):
     raise ValueError("GOOGLE_API_KEY environment variable not set.")
 
