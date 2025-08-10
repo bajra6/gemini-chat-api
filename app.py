@@ -1,172 +1,177 @@
 from flask import Flask, request, jsonify
-import google.generativeai as genai
-from flask_cors import CORS 
+from flask_cors import CORS
 import uuid
 import os
-import time
 from datetime import datetime
+import nest_asyncio
+
+# Apply the patch to allow nested asyncio event loops
+nest_asyncio.apply()
+
+# --- Langchain and Gemini Imports ---
+from langchain.chains import create_history_aware_retriever, create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_community.document_loaders import TextLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_community.vectorstores import FAISS
 
 app = Flask(__name__)
-CORS(app)  # Remove in production or specify domains
+CORS(app)  # Configure for specific domains in production
 
-# Configuration
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "your_api_key_here")
-MODEL_NAME = "gemini-2.5-flash"
-MAX_RESPONSE_TOKENS = 100
-# Updated system prompt
-SYSTEM_PROMPT = """
-You are a mature, non-judgmental friend/Psychologist for teenagers. Provide helpful, honest advice on any topic while maintaining appropriate boundaries. Strictly reply in 2 to 3 sentences or bullet points no more than that!.
+# --- Configuration ---
+os.environ["GOOGLE_API_KEY"] = "AIzaSyDbfJXpFTJUjw4THXI7Um-8l4EO9YpfjPE"
+if not os.getenv("GOOGLE_API_KEY"):
+    raise ValueError("GOOGLE_API_KEY environment variable not set.")
 
-Guidelines:
-1. Always respond in a friendly, conversational tone using simple language
-2. For sensitive topics:
-   - Offer thoughtful guidance without graphic details
-   - Suggest consulting trusted adults when appropriate
-3. Structure responses clearly:
-   • Use bullet points for multiple ideas
-   • Add line breaks between concepts
-   • Keep under 200 tokens
-4. Never say "I can't answer that" - instead:
-   - Rephrase sensitive topics positively
-   - Focus on general principles
-   - Redirect to appropriate resources
+DOCUMENT_PATH = "document.txt"
 
-Example approach:
-User: "How do I deal with peer pressure to try drugs?"
-Response: "That's a really important question. Here are some strategies:
-• Practice saying no confidently - 'No thanks, that's not for me'
-• Suggest alternative activities
-• Surround yourself with friends who respect your choices
-If you're facing serious pressure, talking to a school counselor can help."
-"""
-# Initialize Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel(
-    MODEL_NAME,
-    system_instruction=SYSTEM_PROMPT,
-    generation_config=genai.GenerationConfig(
-        max_output_tokens=MAX_RESPONSE_TOKENS
-    ),
-    # Adjust safety settings to reduce blocking
-    safety_settings={
-        'HATE': 'BLOCK_NONE',
-        'HARASSMENT': 'BLOCK_NONE',
-        'SEXUAL': 'BLOCK_NONE',
-        'DANGEROUS': 'BLOCK_NONE'
-    }
-)
+# --- Global RAG Agent Components ---
+# These are initialized once when the application starts.
+LLM = None
+VECTORSTORE = None
+RAG_CHAIN = None
 
-# In-memory session storage
-sessions = {}
+def initialize_global_rag_agent():
+    """
+    Initializes the core RAG components that are shared across all sessions.
+    This should be called only once at startup.
+    """
+    global LLM, VECTORSTORE, RAG_CHAIN
+    
+    print("Initializing global RAG components...")
+    
+    # 1. Initialize LLM and Embeddings
+    LLM = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.7)
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
 
+    # 2. Load, split, and create the vector store
+    print("Setting up vector store...")
+    loader = TextLoader(DOCUMENT_PATH)
+    docs = loader.load()
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    splits = text_splitter.split_documents(docs)
+    VECTORSTORE = FAISS.from_documents(documents=splits, embedding=embeddings)
+    print(f"Vector store created with {len(splits)} document splits.")
+
+    # 3. Create the conversational RAG chain
+    print("Creating RAG chain...")
+    # History-Aware Retriever
+    contextualize_q_system_prompt = """Given a chat history and the latest user question, \
+    which might reference context in the chat history, formulate a standalone question \
+    which can be understood without the chat history. Do NOT answer the question, \
+    just reformulate it if needed and otherwise return it as is."""
+    contextualize_q_prompt = ChatPromptTemplate.from_messages([
+        ("system", contextualize_q_system_prompt),
+        MessagesPlaceholder("chat_history"),
+        ("human", "{input}"),
+    ])
+    history_aware_retriever = create_history_aware_retriever(
+        LLM, VECTORSTORE.as_retriever(), contextualize_q_prompt
+    )
+
+    # Answering Chain
+    qa_system_prompt = """You are a mature, non-judgmental friend/Psychologist for teenagers. \
+    Provide helpful, honest advice on any topic while maintaining appropriate boundaries. \
+    Use the following pieces of retrieved context to answer the question. \
+    If you don't know the answer from the context, say that you don't have information on that topic. \
+    Strictly reply in 2 to 3 sentences or bullet points, no more than that.
+
+    Context:
+    {context}"""
+    qa_prompt = ChatPromptTemplate.from_messages([
+        ("system", qa_system_prompt),
+        MessagesPlaceholder("chat_history"),
+        ("human", "{input}"),
+    ])
+    question_answer_chain = create_stuff_documents_chain(LLM, qa_prompt)
+
+    # Full RAG Chain
+    RAG_CHAIN = create_retrieval_chain(history_aware_retriever, question_answer_chain)
+    print("Global RAG components initialized successfully.")
+
+
+# --- Session Management Class ---
 class ChatSession:
+    """
+    A lightweight class to hold the chat history for a single session.
+    """
     def __init__(self, session_id):
         self.id = session_id
-        self.history = []
-        self.created_at = datetime.now()
-        self.last_used = datetime.now()
-        self.chat = model.start_chat(history=[])
-    
-    def add_message(self, role, parts):
-        self.history.append({"role": role, "content": parts, "timestamp": time.time()})
-        self.last_used = datetime.now()
-    
-    def get_gemini_history(self):
-        return [{"role": msg["role"], "parts": [msg["content"]]} for msg in self.history]
+        self.chat_history = []
 
-def get_session(session_id=None):
-    if session_id and session_id in sessions:
-        session = sessions[session_id]
-        session.last_used = datetime.now()
-        return session
-    
-    new_id = session_id or f"session_{uuid.uuid4()}"
-    session = ChatSession(new_id)
-    sessions[new_id] = session
-    return session
+# In-memory session storage. For production, consider using Redis or a database.
+sessions = {}
 
-def extract_response_text(response):
-    """Safely extract text from Gemini response with error handling"""
-    try:
-        # First try the standard method
-        return response.text
-    except ValueError:
-        # If standard method fails, try manual extraction
-        if response.candidates:
-            for candidate in response.candidates:
-                if candidate.content and candidate.content.parts:
-                    text_parts = [part.text for part in candidate.content.parts if hasattr(part, 'text')]
-                    if text_parts:
-                        return ''.join(text_parts)
-        
-        # Check for safety blocking
-        if response.prompt_feedback and response.prompt_feedback.block_reason:
-            return "I'm sorry, I couldn't respond to that due to content safety restrictions."
-        
-        return "I'm sorry, I couldn't generate a response for that query."
-
+# --- Flask Endpoints ---
 @app.route('/chat', methods=['POST'])
 def chat_endpoint():
     data = request.json
     query = data.get('query')
-    session_id = data.get('session_id')
+    session_id = data.get('session_id', None)
     
     if not query:
         return jsonify({"error": "Missing 'query' parameter"}), 400
     
+    # Get or create a chat session
+    if session_id and session_id in sessions:
+        session = sessions[session_id]
+    else:
+        session_id = f"session_{uuid.uuid4()}"
+        session = ChatSession(session_id)
+        sessions[session_id] = session
+        
     try:
-        session = get_session(session_id)
-        session.add_message("user", query)
+        # Get the response from the RAG chain
+        response_data = RAG_CHAIN.invoke({
+            "input": query,
+            "chat_history": session.chat_history
+        })
         
-        # Generate response
-        response = session.chat.send_message(query)
-        answer = extract_response_text(response)
-        
-        session.add_message("model", answer)
-        cleanup_old_sessions()
+        ai_response_text = response_data["answer"]
+
+        # Update chat history for the session
+        session.chat_history.append(HumanMessage(content=query))
+        session.chat_history.append(AIMessage(content=ai_response_text))
+        print("hi ----------")
+        print({
+            "response": ai_response_text,
+            "session_id": session_id,
+            "history_length": len(session.chat_history),
+            "retrieved_context": [doc.page_content for doc in response_data.get("context", [])]
+        })
         
         return jsonify({
-            "response": answer,
-            "session_id": session.id,
-            "model": MODEL_NAME,
-            "history_length": len(session.history)
+            "response": ai_response_text,
+            "session_id": session_id,
+            "history_length": len(session.chat_history),
+            "retrieved_context": [doc.page_content for doc in response_data.get("context", [])]
         })
     
     except Exception as e:
-        return jsonify({
-            "error": str(e),
-            "session_id": session_id
-        }), 500
-
-def cleanup_old_sessions(max_age_seconds=3600, max_sessions=50):
-    now = datetime.now()
-    expired_keys = [
-        sid for sid, session in sessions.items()
-        if (now - session.last_used).total_seconds() > max_age_seconds
-    ]
-    
-    for key in expired_keys:
-        sessions.pop(key, None)
-    
-    if len(sessions) > max_sessions:
-        oldest = sorted(sessions.items(), key=lambda x: x[1].last_used)[0][0]
-        sessions.pop(oldest, None)
+        print(f"An error occurred during chat: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/session/<session_id>', methods=['DELETE'])
 def delete_session(session_id):
-    sessions.pop(session_id, None)
-    return jsonify({"status": f"Session {session_id} deleted"})
-
-@app.route('/model-info', methods=['GET'])
-def model_info():
-    return jsonify({
-        "model": MODEL_NAME,
-        "system_prompt": SYSTEM_PROMPT,
-        "max_response_tokens": MAX_RESPONSE_TOKENS,
-        "capabilities": ["text", "multimodal"],
-        "max_input_tokens": 1048576,
-        "cost_effective": True
-    })
+    """Deletes a session to free up memory."""
+    if session_id in sessions:
+        sessions.pop(session_id, None)
+        return jsonify({"status": f"Session {session_id} deleted successfully."})
+    return jsonify({"error": "Session not found"}), 404
 
 if __name__ == '__main__':
+    # Ensure the knowledge base document exists
+    if not os.path.exists(DOCUMENT_PATH):
+        with open(DOCUMENT_PATH, "w") as f:
+            f.write("This is a sample document for the RAG agent.\n")
+            f.write("Friendship is about supporting each other.\n")
+            
+    # Initialize the global RAG agent before starting the app
+    initialize_global_rag_agent()
     app.run(host='0.0.0.0', port=5000, debug=True)
+    # app.run(host='127.0.0.1', port=5000, debug=True, use_reloader=False)
