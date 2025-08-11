@@ -22,7 +22,7 @@ app = Flask(__name__)
 CORS(app)  # Configure for specific domains in production
 
 # --- Configuration ---
-os.environ["GOOGLE_API_KEY"] = "XXXX"
+os.environ["GOOGLE_API_KEY"] = "xxx"
 if not os.getenv("GOOGLE_API_KEY"):
     raise ValueError("GOOGLE_API_KEY environment variable not set.")
 
@@ -173,5 +173,5 @@ if __name__ == '__main__':
             
     # Initialize the global RAG agent before starting the app
     initialize_global_rag_agent()
-    app.run(host='0.0.0.0', port=5000, debug=True)
-    # app.run(host='127.0.0.1', port=5000, debug=True, use_reloader=False)
+    # app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='127.0.0.1', port=5000, debug=True, use_reloader=False)
